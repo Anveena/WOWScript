@@ -39,14 +39,15 @@ class AudioHandle(Thread):
                     if current_volume > -10:
                         if time.time() - last_heard_voice > 2:
                             last_heard_voice = time.time()
-                            print('钓到鱼了,音量:', last_heard_voice)
+                            print('钓到鱼了,音量:', current_volume)
                             self.event.set()
 
 
 class VideoHandle(Thread):
-    def __init__(self, on_fish_event):
+    def __init__(self, on_fish_event, hit):
         Thread.__init__(self)
         self.event = on_fish_event
+        self.hit = hit
         self.k = PyKeyboard()
         self.template = []
         self.max_loc = []
@@ -75,14 +76,24 @@ class VideoHandle(Thread):
 
     def run(self):
         self.init_float_img()
-        start_time = 0
+        start_time = time.time()
+        last_hit_time = time.time()
         while True:
-            if time.time() - start_time > 1500:
-                print('需要使用鱼饵')
+            if self.hit and time.time() - last_hit_time > 600:
+                print('需要召唤生物击杀')
                 self.k.tap_key('e', 1)
+                time.sleep(5)
+                self.k.tap_key('q', 1)
+                time.sleep(3)
+                self.k.tap_key('g', 1)
+                time.sleep(5)
+                last_hit_time = time.time()
+            if time.time() - start_time > 500:
+                print('需要使用鱼饵')
+                self.k.tap_key('5', 1)
                 start_time = time.time()
                 print('鱼饵已经使用!')
-                time.sleep(1)
+                time.sleep(2)
             time.sleep(1)
             print('准备钓鱼')
             self.k.tap_key('q', 1)
@@ -100,17 +111,15 @@ class VideoHandle(Thread):
                 at.mouse.click(at.mouse.Button.RIGHT)
             else:
                 self.k.tap_key(' ', 1)
-            time.sleep(1)
             at.mouse.smooth_move(random.randint(1, 1000), random.randint(1, 1439))
 
 
 if __name__ == '__main__':
     on_fish_event = Event()
-    video_thread = VideoHandle(on_fish_event)
+    video_thread = VideoHandle(on_fish_event,True)
     audio_thread = AudioHandle(on_fish_event)
     video_thread.start()
     audio_thread.start()
     video_thread.join()
     audio_thread.join()
-    # at.mouse.smooth_move(random.randint(1, 1000), random.randint(1, 1439))
-
+    at.mouse.smooth_move(random.randint(1, 1000), random.randint(1, 1439))
