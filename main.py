@@ -36,7 +36,7 @@ class AudioHandle(Thread):
                 rs = pattern.findall(str(out))
                 if len(rs) > 0:
                     current_volume = float(rs[0])
-                    if current_volume > -10:
+                    if current_volume > -15:
                         if time.time() - last_heard_voice > 2:
                             last_heard_voice = time.time()
                             print('钓到鱼了,音量:', current_volume)
@@ -76,10 +76,10 @@ class VideoHandle(Thread):
 
     def run(self):
         self.init_float_img()
-        start_time = time.time()
-        last_hit_time = time.time()
+        start_time = 0
+        last_hit_time = 0
         while True:
-            if self.hit and time.time() - last_hit_time > 600:
+            if self.hit and time.time() - last_hit_time > 444:
                 print('需要召唤生物击杀')
                 self.k.tap_key('e', 1)
                 time.sleep(5)
@@ -88,12 +88,16 @@ class VideoHandle(Thread):
                 self.k.tap_key('g', 1)
                 time.sleep(5)
                 last_hit_time = time.time()
-            if time.time() - start_time > 500:
+            else:
+                print('还在时间内,不需要打怪',time.time() - last_hit_time)
+            if time.time() - start_time > 550:
                 print('需要使用鱼饵')
                 self.k.tap_key('5', 1)
                 start_time = time.time()
                 print('鱼饵已经使用!')
                 time.sleep(2)
+            else:
+                print('还在时间内,不需要使用鱼饵',time.time() - start_time)
             time.sleep(1)
             print('准备钓鱼')
             self.k.tap_key('q', 1)
@@ -116,10 +120,9 @@ class VideoHandle(Thread):
 
 if __name__ == '__main__':
     on_fish_event = Event()
-    video_thread = VideoHandle(on_fish_event,True)
+    video_thread = VideoHandle(on_fish_event,False)
     audio_thread = AudioHandle(on_fish_event)
     video_thread.start()
     audio_thread.start()
     video_thread.join()
     audio_thread.join()
-    at.mouse.smooth_move(random.randint(1, 1000), random.randint(1, 1439))
