@@ -13,10 +13,13 @@ from mss import mss
 from PIL import Image
 import numpy as np
 from threading import Thread, Event
+import argparse
 
 width_ignore = 1200
 bottom_ignore = 540
 ext_pixs = 150
+thresh = 100
+bait_remaining = 0
 
 
 class AudioHandle(Thread):
@@ -30,12 +33,18 @@ class AudioHandle(Thread):
         p = subprocess.Popen(shlex.split(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT)
         pattern = re.compile(r'M: (.*) S:')
-        last_heard_voice = 0
+        last_heard_voice = time.time()
         max_voice_this_loop = -100
+        total_times = 0
+        suc_times = 0
+        failed_times = 0
         while p.poll() is None:
             out = p.stdout.readline().strip()
             if time.time() - last_heard_voice > 17:
-                print(f'\033[93m很久没有听到钓鱼声了。最大声音：{max_voice_this_loop}\033[0m')
+                failed_times += 1
+                total_times += 1
+                print(f'\033[91m音频失败率:{failed_times}/{total_times}={(failed_times * 100 / total_times):.1f}%.'
+                      f'最大声音:{max_voice_this_loop:.2f}\033[0m')
                 last_heard_voice = time.time()
                 self.event.set()
                 continue
@@ -47,7 +56,12 @@ class AudioHandle(Thread):
                         max_voice_this_loop = current_volume
                     if current_volume > -50:
                         if time.time() - last_heard_voice > 2:
+                            suc_times += 1
+                            total_times += 1
                             last_heard_voice = time.time()
+                            print(
+                                f'\033[92m音频成功率:{suc_times}/{total_times}={(suc_times * 100 / total_times):.1f}%.'
+                                f'当前音量:{current_volume:.2f}\033[0m')
                             self.event.set()
         print(f'\033[91m音频进程已退出\033[0m')
         self.stop_event.set()
@@ -66,6 +80,9 @@ class VideoHandle(Thread):
         self.screenshot_img = []
         self.x_padding = 0
         self.y_padding = 0
+        self.suc_times = 0
+        self.failed_times = 0
+        self.total_times = 0
 
     def init_float_img(self):
         self.template = cv2.imread('O:\\1.png', 0)
@@ -77,8 +94,8 @@ class VideoHandle(Thread):
         tmp_gray = cv2.cvtColor(tmp_array, cv2.COLOR_RGB2GRAY)
         prev_gray = cv2.cvtColor(prev_array, cv2.COLOR_RGB2GRAY)
 
-        _, tmp_binary = cv2.threshold(tmp_gray, 128, 255, cv2.THRESH_BINARY)
-        _, prev_binary = cv2.threshold(prev_gray, 128, 255, cv2.THRESH_BINARY)
+        _, tmp_binary = cv2.threshold(tmp_gray, thresh, 255, cv2.THRESH_BINARY)
+        _, prev_binary = cv2.threshold(prev_gray, thresh, 255, cv2.THRESH_BINARY)
 
         diff = cv2.absdiff(tmp_binary, prev_binary)
         contours, _ = cv2.findContours(diff, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -108,8 +125,9 @@ class VideoHandle(Thread):
             return
         self.x_padding = max(0, x_min - ext_pixs)
         self.y_padding = max(0, y_min - ext_pixs)
-        print(f'\033[92m未扩展时的处理范围：({x_max - x_min}, {y_max - y_min})\n'
-              f'实际处理的范围:(x_min:{self.x_padding},y_min:{self.y_padding},x_max:{min(tmp.width, x_max + ext_pixs)},y_max:{min(tmp.height, y_max + ext_pixs)})'
+        print(f'\033[97m未扩展时的处理宽度:{x_max - x_min}高度:{y_max - y_min}\n'
+              f'实际处理的水平范围:{self.x_padding + width_ignore}到{min(tmp.width, x_max + ext_pixs) + width_ignore},'
+              f'垂直范围:{self.y_padding}到{min(tmp.height, y_max + ext_pixs)}'
               f'\033[0m')
         cropped_region = tmp_array[self.y_padding:min(tmp.height, y_max + ext_pixs),
                          self.x_padding:min(tmp.width, x_max + ext_pixs)]
@@ -137,18 +155,28 @@ class VideoHandle(Thread):
         img_gray = cv2.cvtColor(img_rgb, cv2.COLOR_BGR2GRAY)
         res = cv2.matchTemplate(img_gray, self.template, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, self.max_loc = cv2.minMaxLoc(res)
+        self.total_times += 1
         if max_val > 0.60:
-            print(f'\033[92m找到了，置信度：{max_val}，位置：{self.max_loc[0]}, {self.max_loc[1]}\033[0m')
+            self.suc_times += 1
+            self.max_loc = (self.max_loc[0] + width_ignore + self.x_padding, self.max_loc[1] + self.y_padding)
+            print(
+                f'\033[92m视频成功率:{self.suc_times}/{self.total_times}={(self.suc_times * 100 / self.total_times):.1f}%.'
+                f'置信度:{max_val:.2f},位置:{self.max_loc[0]},{self.max_loc[1]}\033[0m')
             return True
-        print(f'\033[91m没有找到，置信度：{max_val}\033[0m')
+        self.failed_times += 1
+        print(
+            f'\033[91m视频失败率:{self.failed_times}/{self.total_times}={(self.failed_times * 100 / self.total_times):.1f}%.'
+            f'置信度:{max_val:.2f}\033[0m')
         return False
 
     def run(self):
         self.init_float_img()
-        start_time = 0
+        bait_time = 0
         last_hit_time = 0
         act_start_time = time.time()
         suc_times = 0
+        if bait_remaining != 0:
+            bait_time = time.time() + 60 * bait_remaining
         while not self.stop_event.is_set():
             # if self.hit and time.time() - last_hit_time > 444:
             #     print('需要召唤生物击杀')
@@ -161,17 +189,17 @@ class VideoHandle(Thread):
             #     last_hit_time = time.time()
             # else:
             #     print('还在时间内,不需要打怪', time.time() - last_hit_time)
-            target_time = datetime.datetime(2024, 7, 24, 17, 20)
-            if time.time() - start_time > 600 and datetime.datetime.fromtimestamp(time.time()) > target_time:
+            next_bait_time_interval = time.time() - bait_time
+            if next_bait_time_interval > 0:
                 self.stop_event.wait(timeout=1)
                 print('\033[93m需要使用鱼饵\033[0m')
                 self.k.tap_key('e', 1)
-                start_time = time.time()
+                bait_time = time.time() + 600
                 print('\033[93m鱼饵已经使用！\033[0m')
                 self.stop_event.wait(timeout=3)
             else:
-                print(f'\033[96m还在时间内，不需要使用鱼饵：{time.time() - start_time}\033[0m')
-            print('\033[96m准备钓鱼\033[0m')
+                print(f'\033[93m距离下次使用鱼饵还有{-next_bait_time_interval:.1f}秒\033[0m')
+            print('\033[96m截图并释放钓鱼\033[0m')
             self.make_screenshot(True)
             self.stop_event.wait(timeout=0.5)
             self.k.tap_key('1', 1)
@@ -179,14 +207,13 @@ class VideoHandle(Thread):
             self.stop_event.wait(timeout=2)
             self.make_screenshot(False)
             if self.find_float():
-                at.moveTo(self.max_loc[0] + width_ignore + self.x_padding, self.max_loc[1] + self.y_padding,
-                          duration=0.3)  # 这里说明找到了
-                print('\033[92m等待钓鱼\033[0m')
+                at.moveTo(self.max_loc[0], self.max_loc[1], duration=0.3)
+                print('\033[96m等待鱼上钩的声音\033[0m')
                 self.event.wait()
                 suc_times += 1
                 time_passed_since_act_start = time.time() - act_start_time
-                print(f'\033[92m钓到第 {suc_times} 条鱼，用时 {time_passed_since_act_start} 秒，'
-                      f'平均每6分钟钓鱼 {360 * suc_times / time_passed_since_act_start} 条\033[0m')
+                print(f'\033[96m钓到第{suc_times}条鱼,用时{time_passed_since_act_start:.2f}秒.'
+                      f'平均每6分钟钓鱼{(360 * suc_times / time_passed_since_act_start):.1f}条\033[0m')
                 at.rightClick()
                 self.stop_event.wait(timeout=0.2)
                 self.k.tap_key('z', 1)
@@ -196,9 +223,22 @@ class VideoHandle(Thread):
                 self.k.tap_key(' ', 1)
                 self.stop_event.wait(timeout=1)
             at.moveTo(random.randint(1, width_ignore), random.randint(1, 1000), duration=0.3)
+            print('\033[96m周期结束\n\n周期开始\033[0m')
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='处理图像参数')
+    parser.add_argument('--width_ignore', type=int, default=1200, help='宽度忽略')
+    parser.add_argument('--bottom_ignore', type=int, default=540, help='底部忽略')
+    parser.add_argument('--ext_pixs', type=int, default=150, help='扩展像素')
+    parser.add_argument('--thresh', type=int, default=100, help='二值化的阈值,天亮高,天黑低,降低运算负载度')
+    parser.add_argument('--bait_remaining', type=int, default=0, help='当前鱼饵剩余时间(分钟)')
+    args = parser.parse_args()
+    thresh = args.thresh
+    width_ignore = args.width_ignore
+    bottom_ignore = args.bottom_ignore
+    ext_pixs = args.ext_pixs
+    bait_remaining = args.bait_remaining
     stop_event = Event()
     on_fish_event = Event()
     video_thread = VideoHandle(stop_event, on_fish_event, False)
