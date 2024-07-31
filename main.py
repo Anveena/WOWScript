@@ -20,12 +20,12 @@ ext_pixs = 150
 
 
 class AudioHandle(Thread):
-    def __init__(self, on_fish_event):
+    def __init__(self, stop_event, on_fish_event):
         Thread.__init__(self)
         self.event = on_fish_event
+        self.stop_event = stop_event
 
     def run(self):
-        print('\n--- 启动音频处理 ---')
         command = "ffmpeg -f dshow -i audio=\"立体声混音 (Realtek(R) Audio)\" -ac 2 -ar 192000  -filter_complex ebur128 -f null -"
         p = subprocess.Popen(shlex.split(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT)
@@ -35,7 +35,7 @@ class AudioHandle(Thread):
         while p.poll() is None:
             out = p.stdout.readline().strip()
             if time.time() - last_heard_voice > 17:
-                print(f'\033[93m--- 很久没有听到钓鱼声了。最大声音：{max_voice_this_loop} ---\033[0m')
+                print(f'\033[93m很久没有听到钓鱼声了。最大声音：{max_voice_this_loop}\033[0m')
                 last_heard_voice = time.time()
                 self.event.set()
                 continue
@@ -49,12 +49,16 @@ class AudioHandle(Thread):
                         if time.time() - last_heard_voice > 2:
                             last_heard_voice = time.time()
                             self.event.set()
+        print(f'\033[91m音频进程已退出\033[0m')
+        self.stop_event.set()
+        self.event.set()
 
 
 class VideoHandle(Thread):
-    def __init__(self, on_fish_event, hit):
+    def __init__(self, stop_event, on_fish_event, hit):
         Thread.__init__(self)
         self.event = on_fish_event
+        self.stop_event = stop_event
         self.hit = hit
         self.k = PyKeyboard()
         self.template = []
@@ -80,7 +84,9 @@ class VideoHandle(Thread):
         contours, _ = cv2.findContours(diff, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             self.screenshot_img = tmp
-            print('\033[91m--- 画面没有变化！ ---\033[0m')
+            self.x_padding = 0
+            self.y_padding = 0
+            print('\033[91m画面没有变化！\033[0m')
             return
         x_min, y_min = 10000, 10000
         x_max, y_max = 0, 0
@@ -96,14 +102,15 @@ class VideoHandle(Thread):
             found = True
         if not found:
             self.screenshot_img = tmp
-            print('\033[91m--- 画面基本没有变化！ ---\033[0m')
+            self.x_padding = 0
+            self.y_padding = 0
+            print('\033[91m画面基本没有变化！\033[0m')
             return
         self.x_padding = max(0, x_min - ext_pixs)
         self.y_padding = max(0, y_min - ext_pixs)
-        print(f'\033[92m--- 准备处理的位置：({self.x_padding}, {self.y_padding})，'
-              f'未扩展时的处理范围：({x_max - x_min}, {y_max - y_min})，'
-              f'实际的处理范围:(x_min:{self.x_padding},y_min:{self.y_padding},x_max:{min(tmp.width, x_max + ext_pixs)},y_max:{min(tmp.height, y_max + ext_pixs)},)'
-              f'总像素点：{(x_max - x_min) * (y_max - y_min)} ---\033[0m')
+        print(f'\033[92m未扩展时的处理范围：({x_max - x_min}, {y_max - y_min})\n'
+              f'实际处理的范围:(x_min:{self.x_padding},y_min:{self.y_padding},x_max:{min(tmp.width, x_max + ext_pixs)},y_max:{min(tmp.height, y_max + ext_pixs)})'
+              f'\033[0m')
         cropped_region = tmp_array[self.y_padding:min(tmp.height, y_max + ext_pixs),
                          self.x_padding:min(tmp.width, x_max + ext_pixs)]
         # timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
@@ -131,9 +138,9 @@ class VideoHandle(Thread):
         res = cv2.matchTemplate(img_gray, self.template, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, self.max_loc = cv2.minMaxLoc(res)
         if max_val > 0.60:
-            print(f'\033[92m--- 找到了，置信度：{max_val}，位置：{self.max_loc[0]}, {self.max_loc[1]} ---\033[0m')
+            print(f'\033[92m找到了，置信度：{max_val}，位置：{self.max_loc[0]}, {self.max_loc[1]}\033[0m')
             return True
-        print(f'\033[91m--- 没有找到，置信度：{max_val} ---\033[0m')
+        print(f'\033[91m没有找到，置信度：{max_val}\033[0m')
         return False
 
     def run(self):
@@ -142,7 +149,7 @@ class VideoHandle(Thread):
         last_hit_time = 0
         act_start_time = time.time()
         suc_times = 0
-        while True:
+        while not self.stop_event.is_set():
             # if self.hit and time.time() - last_hit_time > 444:
             #     print('需要召唤生物击杀')
             #     self.k.tap_key('e', 1)
@@ -156,46 +163,51 @@ class VideoHandle(Thread):
             #     print('还在时间内,不需要打怪', time.time() - last_hit_time)
             target_time = datetime.datetime(2024, 7, 24, 17, 20)
             if time.time() - start_time > 600 and datetime.datetime.fromtimestamp(time.time()) > target_time:
-                time.sleep(3)
-                print('\033[93m--- 需要使用鱼饵 ---\033[0m')
+                self.stop_event.wait(timeout=1)
+                print('\033[93m需要使用鱼饵\033[0m')
                 self.k.tap_key('e', 1)
                 start_time = time.time()
-                print('\033[93m--- 鱼饵已经使用！ ---\033[0m')
-                time.sleep(3)
+                print('\033[93m鱼饵已经使用！\033[0m')
+                self.stop_event.wait(timeout=3)
             else:
-                print(f'\033[96m--- 还在时间内，不需要使用鱼饵：{time.time() - start_time} ---\033[0m')
-            print('\033[96m--- 准备钓鱼 ---\033[0m')
+                print(f'\033[96m还在时间内，不需要使用鱼饵：{time.time() - start_time}\033[0m')
+            print('\033[96m准备钓鱼\033[0m')
             self.make_screenshot(True)
-            time.sleep(0.5)
+            self.stop_event.wait(timeout=0.5)
             self.k.tap_key('1', 1)
             self.event.clear()
-            time.sleep(2)
+            self.stop_event.wait(timeout=2)
             self.make_screenshot(False)
             if self.find_float():
                 at.moveTo(self.max_loc[0] + width_ignore + self.x_padding, self.max_loc[1] + self.y_padding,
                           duration=0.3)  # 这里说明找到了
-                print('\033[92m--- 等待钓鱼 ---\033[0m')
+                print('\033[92m等待钓鱼\033[0m')
                 self.event.wait()
                 suc_times += 1
                 time_passed_since_act_start = time.time() - act_start_time
-                print(f'\033[92m--- 钓到第 {suc_times} 条鱼，用时 {time_passed_since_act_start} 秒，'
-                      f'平均每6分钟钓鱼 {360 * suc_times / time_passed_since_act_start} 条 ---\033[0m')
+                print(f'\033[92m钓到第 {suc_times} 条鱼，用时 {time_passed_since_act_start} 秒，'
+                      f'平均每6分钟钓鱼 {360 * suc_times / time_passed_since_act_start} 条\033[0m')
                 at.rightClick()
-                time.sleep(0.2)
+                self.stop_event.wait(timeout=0.2)
                 self.k.tap_key('z', 1)
-                time.sleep(0.4)
+                self.stop_event.wait(timeout=0.4)
                 self.k.tap_key('u', 1)
             else:
                 self.k.tap_key(' ', 1)
-                time.sleep(1)
+                self.stop_event.wait(timeout=1)
             at.moveTo(random.randint(1, width_ignore), random.randint(1, 1000), duration=0.3)
 
 
 if __name__ == '__main__':
+    stop_event = Event()
     on_fish_event = Event()
-    video_thread = VideoHandle(on_fish_event, False)
-    audio_thread = AudioHandle(on_fish_event)
+    video_thread = VideoHandle(stop_event, on_fish_event, False)
+    audio_thread = AudioHandle(stop_event, on_fish_event)
     video_thread.start()
     audio_thread.start()
-    video_thread.join()
-    audio_thread.join()
+    try:
+        video_thread.join()
+        audio_thread.join()
+    except KeyboardInterrupt:
+        if False:
+            print(1)
