@@ -1,5 +1,6 @@
 # coding=utf-8
 import datetime
+import os
 import random
 import time
 import subprocess, shlex
@@ -15,7 +16,7 @@ import numpy as np
 
 width_ignore = 1200
 bottom_ignore = 540
-ext_pixs = 100
+ext_pixs = 150
 
 
 class AudioHandle(Thread):
@@ -47,7 +48,6 @@ class AudioHandle(Thread):
                     if current_volume > -50:  # 56.31,51.91
                         if time.time() - last_heard_voice > 2:
                             last_heard_voice = time.time()
-                            print('钓到鱼了,音量:', current_volume)
                             self.event.set()
 
 
@@ -89,34 +89,41 @@ class VideoHandle(Thread):
         # 4. Find differences
         diff = cv2.absdiff(tmp_binary, prev_binary)
         contours, _ = cv2.findContours(diff, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            self.screenshot_img = tmp
+            print("画面没有变化?!")
+            return
+        x_min, y_min = 10000, 10000
+        x_max, y_max = 0, 0
+        found = False
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            if w < 12 or h < 12:
+                continue
+            x_min = min(x_min, x)
+            y_min = min(y_min, y)
+            x_max = max(x_max, x + w)
+            y_max = max(y_max, y + h)
+            found = True
+        if not found:
+            self.screenshot_img = tmp
+            print("画面基本没有变化?!")
+            return
+        # 5. Crop the different regions
+        self.x_padding = max(0, x_min - ext_pixs)
+        self.y_padding = max(0, y_min - ext_pixs)
+        print("准备处理的位置:(", self.x_padding, ",", self.y_padding, "),未扩展时的处理范围:(",
+              x_max - x_min, ",", y_max - y_min, "),共处理像素点:", (x_max - x_min) * (y_max - y_min))
+        cropped_region = tmp_array[self.y_padding:min(tmp.height, y_max + ext_pixs),
+                         self.x_padding:min(tmp.width, x_max + ext_pixs)]
 
-        # Initialize variables to store the bounding rectangle coordinates
-        if contours:
-            x_min, y_min = float('inf'), float('inf')
-            x_max, y_max = float('-inf'), float('-inf')
-
-            for contour in contours:
-                x, y, w, h = cv2.boundingRect(contour)
-                if w < 20 or h < 20:
-                    continue
-                x_min = min(x_min, x)
-                y_min = min(y_min, y)
-                x_max = max(x_max, x + w)
-                y_max = max(y_max, y + h)
-
-            # 5. Crop the different regions
-            self.x_padding = max(0, x_min - ext_pixs)
-            self.y_padding = max(0, y_min - ext_pixs)
-            cropped_region = tmp_array[self.y_padding:min(tmp.height, y_max + ext_pixs),
-                             self.x_padding:min(tmp.width, x_max + ext_pixs)]
-
-            # 6. Save the cropped region as JPEG with a timestamp
-            # timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
-            # save_path = os.path.join("O:\\", f"{timestamp}.jpg")
-            # cv2.imwrite(save_path, cv2.cvtColor(cropped_region, cv2.COLOR_RGB2BGR))
-            # diff_save_path = os.path.join("O:\\", f"{timestamp}_diff.jpg")
-            # cv2.imwrite(diff_save_path, diff)
-            self.screenshot_img = Image.fromarray(cropped_region)
+        # 6. Save the cropped region as JPEG with a timestamp
+        # timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
+        # save_path = os.path.join("O:\\", f"{timestamp}.jpg")
+        # cv2.imwrite(save_path, cv2.cvtColor(cropped_region, cv2.COLOR_RGB2BGR))
+        # diff_save_path = os.path.join("O:\\", f"{timestamp}_diff.jpg")
+        # cv2.imwrite(diff_save_path, diff)
+        # self.screenshot_img = Image.fromarray(cropped_region)
 
     def make_screenshot(self, is_first):
         with mss() as sct:
@@ -145,6 +152,8 @@ class VideoHandle(Thread):
         self.init_float_img()
         start_time = 0
         last_hit_time = 0
+        act_start_time = time.time()
+        suc_times = 0
         while True:
             # if self.hit and time.time() - last_hit_time > 444:
             #     print('需要召唤生物击杀')
@@ -175,11 +184,14 @@ class VideoHandle(Thread):
             time.sleep(2)
             self.make_screenshot(False)
             if self.find_float():
-                print(self.x_padding, self.y_padding)
                 at.moveTo(self.max_loc[0] + width_ignore + self.x_padding, self.max_loc[1] + self.y_padding,
                           duration=0.3)  # 这里说明找到了
                 print('等待钓鱼')
                 self.event.wait()
+                suc_times += 1
+                time_passed_since_act_start = time.time() - act_start_time
+                print('钓到第', suc_times, '条鱼,用时', time_passed_since_act_start, '秒,平均每6分钟钓鱼',
+                      360 * suc_times / time_passed_since_act_start, '条')
                 at.rightClick()
                 time.sleep(0.2)
                 self.k.tap_key('z', 1)
